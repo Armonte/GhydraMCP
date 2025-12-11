@@ -11,6 +11,8 @@ package eu.starsong.ghidra.endpoints;
     import ghidra.program.model.listing.DataIterator;
     import ghidra.program.model.listing.Listing;
     import ghidra.program.model.listing.Program;
+    import ghidra.program.model.data.ArrayDataType;
+    import ghidra.program.model.data.DataUtilities;
     import ghidra.program.model.mem.MemoryBlock;
     import ghidra.program.model.symbol.SourceType;
     import ghidra.program.model.symbol.Symbol;
@@ -274,13 +276,9 @@ package eu.starsong.ghidra.endpoints;
                         Listing listing = program.getListing();
                         Data data = listing.getDefinedDataAt(addr);
                         
-                        if (data == null) {
-                            throw new Exception("No defined data found at address: " + addressStr);
-                        }
-                        
-                        // Get current data info for operations that need it
+                        // Get current name from data or symbol
                         String currentName = null;
-                        if (data.getLabel() != null) {
+                        if (data != null && data.getLabel() != null) {
                             currentName = data.getLabel();
                         } else {
                             Symbol sym = program.getSymbolTable().getPrimarySymbol(addr);
@@ -289,29 +287,35 @@ package eu.starsong.ghidra.endpoints;
                             }
                         }
                         
+                        // If no data exists but we're just renaming, create a minimal data item or just rename the symbol
+                        if (data == null) {
+                            // If we're only renaming (no type change), just rename/create the symbol
+                            if ((dataTypeStr == null || dataTypeStr.isEmpty()) && newName != null && !newName.isEmpty()) {
+                                SymbolTable symTable = program.getSymbolTable();
+                                Symbol symbol = symTable.getPrimarySymbol(addr);
+                                
+                                if (symbol != null) {
+                                    symbol.setName(newName, SourceType.USER_DEFINED);
+                                } else {
+                                    // Create a new label if no primary symbol exists
+                                    symTable.createLabel(addr, newName, SourceType.USER_DEFINED);
+                                }
+                                
+                                resultMap.put("name", newName);
+                                if (currentName != null) {
+                                    resultMap.put("originalName", currentName);
+                                }
+                                return null; // Success - just renamed symbol
+                            } else {
+                                // Need to create data for type change
+                                throw new Exception("No defined data found at address: " + addressStr + ". Create data first or provide type.");
+                            }
+                        }
+                        
                         // If we need to set a data type
                         if (dataTypeStr != null && !dataTypeStr.isEmpty()) {
-                            // Find the data type
-                            ghidra.program.model.data.DataType dataType = null;
-                            
-                            // First try built-in types
-                            dataType = program.getDataTypeManager().getDataType("/" + dataTypeStr);
-                            
-                            // If not found, try to find it without path
-                            if (dataType == null) {
-                                dataType = program.getDataTypeManager().findDataType("/" + dataTypeStr);
-                            }
-                            
-                            // If still null, try using the parser
-                            if (dataType == null) {
-                                try {
-                                    ghidra.app.util.parser.FunctionSignatureParser parser = 
-                                        new ghidra.app.util.parser.FunctionSignatureParser(program.getDataTypeManager(), null);
-                                    dataType = parser.parse(null, dataTypeStr);
-                                } catch (Exception e) {
-                                    Msg.debug(this, "Function signature parser failed: " + e.getMessage());
-                                }
-                            }
+                            // Find the data type using helper method
+                            ghidra.program.model.data.DataType dataType = parseDataType(program, dataTypeStr);
                             
                             if (dataType == null) {
                                 throw new Exception("Could not find or parse data type: " + dataTypeStr);
@@ -491,8 +495,80 @@ package eu.starsong.ghidra.endpoints;
                         Listing listing = program.getListing();
                         Data data = listing.getDefinedDataAt(addr);
                         
+                        // If no data exists, create it with the requested type
                         if (data == null) {
-                            throw new Exception("No defined data found at address: " + addressStr);
+                            // Find the requested data type using helper method
+                            ghidra.program.model.data.DataType dataType = parseDataType(program, dataTypeStr);
+                            
+                            if (dataType == null) {
+                                throw new Exception("Could not find or parse data type: " + dataTypeStr);
+                            }
+                            
+                            // Check memory block permissions
+                            MemoryBlock block = program.getMemory().getBlock(addr);
+                            if (block == null) {
+                                throw new Exception("Address " + addressStr + " is not in any memory block");
+                            }
+                            if (!block.isInitialized()) {
+                                throw new Exception("Address " + addressStr + " is in an uninitialized memory block");
+                            }
+                            
+                            // Check for overlapping data/instructions
+                            if (listing.getInstructionAt(addr) != null) {
+                                throw new Exception("Instruction exists at address: " + addressStr + ". Cannot create data.");
+                            }
+                            
+                            // Check for overlapping data - but be more lenient
+                            // Just check if there's data AT this exact address, not overlapping
+                            Data existingDataAtAddr = listing.getDefinedDataAt(addr);
+                            if (existingDataAtAddr != null) {
+                                throw new Exception("Data already exists at address: " + addressStr);
+                            }
+                            
+                            // Check for data that starts before but extends into our range
+                            DataIterator it = listing.getDefinedData(addr.subtract(1), false);
+                            if (it.hasNext()) {
+                                Data prevData = it.next();
+                                if (prevData.getMaxAddress().compareTo(addr) >= 0) {
+                                    // Previous data overlaps - clear it first
+                                    listing.clearCodeUnits(prevData.getMinAddress(), prevData.getMaxAddress(), false);
+                                }
+                            }
+                            
+                            // Clear any potential conflicts first (even if no defined data)
+                            int dataLength = dataType.getLength();
+                            if (dataLength > 0) {
+                                Address endAddr = addr.add(dataLength - 1);
+                                try {
+                                    listing.clearCodeUnits(addr, endAddr, false);
+                                } catch (Exception e) {
+                                    Msg.warn(this, "Could not clear code units before creating data: " + e.getMessage());
+                                }
+                            }
+                            
+                            // Create the data using DataUtilities (recommended API)
+                            try {
+                                // Use DataUtilities.createData - signature: createData(Program, Address, DataType, int, boolean, ClearDataMode)
+                                data = DataUtilities.createData(program, addr, dataType, -1, false, 
+                                    DataUtilities.ClearDataMode.CLEAR_SINGLE_DATA);
+                                if (data == null) {
+                                    throw new Exception("Failed to create data with type " + dataTypeStr + " (length: " + 
+                                        dataLength + ") at " + addressStr + ". Memory may be read-only or conflicting data exists.");
+                                }
+                            } catch (Exception e) {
+                                throw new Exception("Error creating data: " + e.getMessage() + " at " + addressStr, e);
+                            }
+                            
+                            // Preserve any existing symbol name
+                            SymbolTable symTable = program.getSymbolTable();
+                            Symbol symbol = symTable.getPrimarySymbol(addr);
+                            if (symbol != null) {
+                                resultMap.put("originalName", symbol.getName());
+                            }
+                            
+                            resultMap.put("dataType", dataTypeStr);
+                            resultMap.put("message", "Data created with type " + dataTypeStr);
+                            return null; // Success - data created
                         }
                         
                         // Get current name to preserve after type change
@@ -507,27 +583,8 @@ package eu.starsong.ghidra.endpoints;
                         String originalType = data.getDataType().getName();
                         resultMap.put("originalType", originalType);
                         
-                        // Find the requested data type
-                        ghidra.program.model.data.DataType dataType = null;
-                        
-                        // First try built-in types
-                        dataType = program.getDataTypeManager().getDataType("/" + dataTypeStr);
-                        
-                        // If not found, try to find it without path
-                        if (dataType == null) {
-                            dataType = program.getDataTypeManager().findDataType("/" + dataTypeStr);
-                        }
-                        
-                        // If still null, try using the parser
-                        if (dataType == null) {
-                            try {
-                                ghidra.app.util.parser.FunctionSignatureParser parser = 
-                                    new ghidra.app.util.parser.FunctionSignatureParser(program.getDataTypeManager(), null);
-                                dataType = parser.parse(null, dataTypeStr);
-                            } catch (Exception e) {
-                                Msg.debug(this, "Function signature parser failed: " + e.getMessage());
-                            }
-                        }
+                        // Find the requested data type using helper method
+                        ghidra.program.model.data.DataType dataType = parseDataType(program, dataTypeStr);
                         
                         if (dataType == null) {
                             throw new Exception("Could not find or parse data type: " + dataTypeStr);
@@ -539,8 +596,17 @@ package eu.starsong.ghidra.endpoints;
                         int newLength = dataType.getLength();
                         int lengthToClear = Math.max(oldLength, newLength > 0 ? newLength : oldLength);
 
-                        // Clear the required space
-                        listing.clearCodeUnits(addr, addr.add(lengthToClear - 1), false);
+                        // Clear the required space - clear a bit extra to handle any overlapping data
+                        Address endAddr = addr.add(lengthToClear - 1);
+                        listing.clearCodeUnits(addr, endAddr, false);
+                        
+                        // Also check and clear any data that might overlap beyond our target
+                        // This handles the "dangling bytes" issue
+                        Data overlappingData = listing.getDefinedDataAfter(addr);
+                        if (overlappingData != null && overlappingData.getMinAddress().compareTo(endAddr) <= 0) {
+                            // There's overlapping data, clear it
+                            listing.clearCodeUnits(overlappingData.getMinAddress(), overlappingData.getMaxAddress(), false);
+                        }
 
                         // Create new data
                         Data newData = listing.createData(addr, dataType);
@@ -828,125 +894,36 @@ package eu.starsong.ghidra.endpoints;
                         Address addr = program.getAddressFactory().getAddress(addressStr);
                         Listing listing = program.getListing();
                         
-                        // Verify no data is already defined at this address
+                        // Check memory block permissions
+                        MemoryBlock block = program.getMemory().getBlock(addr);
+                        if (block == null) {
+                            throw new Exception("Address " + addressStr + " is not in any memory block");
+                        }
+                        if (!block.isInitialized()) {
+                            throw new Exception("Address " + addressStr + " is in an uninitialized memory block");
+                        }
+                        
+                            // Verify no data is already defined at this address
                         Data existingData = listing.getDefinedDataAt(addr);
                         if (existingData != null) {
                             throw new Exception("Data already exists at address: " + addressStr);
                         }
                         
-                        // Find the requested data type
-                        ghidra.program.model.data.DataType dataType = null;
-                        
-                        // Map common shorthand data types to their Ghidra equivalents
-                        String mappedType = dataTypeStr;
-                        switch(dataTypeStr.toLowerCase()) {
-                            case "byte":
-                                mappedType = "byte";
-                                break;
-                            case "char":
-                                mappedType = "char";
-                                break;
-                            case "word":
-                                mappedType = "word";
-                                break;
-                            case "dword":
-                                mappedType = "dword";
-                                break;
-                            case "qword":
-                                mappedType = "qword";
-                                break;
-                            case "string":
-                                // For string, we'll use StringDataType directly
-                                dataType = new ghidra.program.model.data.StringDataType();
-                                break;
-                            case "float":
-                                mappedType = "float";
-                                break;
-                            case "double":
-                                mappedType = "double";
-                                break;
-                            case "int":
-                                mappedType = "int";
-                                break;
-                            case "long":
-                                mappedType = "long";
-                                break;
-                            case "pointer":
-                                mappedType = "pointer";
-                                break;
-                            default:
-                                // Keep the original type string
-                                break;
-                        }
-                        
-                        // Continue with data type lookup if not directly mapped
-                        if (dataType == null) {
-                            // First try built-in types with path
-                            dataType = program.getDataTypeManager().getDataType("/" + mappedType);
-                            
-                            // If not found, try to find it without path
-                            if (dataType == null) {
-                                dataType = program.getDataTypeManager().findDataType("/" + mappedType);
-                            }
-                            
-                            // Try data type manager from program
-                            if (dataType == null) {
-                                try {
-                                    dataType = program.getDataTypeManager().findDataType("/" + mappedType);
-                                } catch (Exception e) {
-                                    Msg.debug(this, "Error getting built-in type: " + e.getMessage());
-                                }
-                            }
-                            
-                            // If still null, try parsing it
-                            if (dataType == null) {
-                                try {
-                                    ghidra.app.util.parser.FunctionSignatureParser parser = 
-                                        new ghidra.app.util.parser.FunctionSignatureParser(program.getDataTypeManager(), null);
-                                    dataType = parser.parse(null, mappedType);
-                                } catch (Exception e) {
-                                    Msg.debug(this, "Function signature parser failed: " + e.getMessage());
-                                }
+                        // Check for overlapping data that might conflict
+                        DataIterator it = listing.getDefinedData(addr, true);
+                        if (it.hasNext()) {
+                            Data nextData = it.next();
+                            if (nextData.getMinAddress().compareTo(addr) <= 0 && nextData.getMaxAddress().compareTo(addr) >= 0) {
+                                throw new Exception("Overlapping data exists at address: " + addressStr);
                             }
                         }
                         
-                        // Try some specific data type classes if still not found
-                        if (dataType == null) {
-                            switch(dataTypeStr.toLowerCase()) {
-                                case "byte":
-                                    dataType = new ghidra.program.model.data.ByteDataType();
-                                    break;
-                                case "char":
-                                    dataType = new ghidra.program.model.data.CharDataType();
-                                    break;
-                                case "word":
-                                    dataType = new ghidra.program.model.data.WordDataType();
-                                    break;
-                                case "dword":
-                                    dataType = new ghidra.program.model.data.DWordDataType();
-                                    break;
-                                case "qword":
-                                    dataType = new ghidra.program.model.data.QWordDataType();
-                                    break;
-                                case "float":
-                                    dataType = new ghidra.program.model.data.FloatDataType();
-                                    break;
-                                case "double":
-                                    dataType = new ghidra.program.model.data.DoubleDataType();
-                                    break;
-                                case "int":
-                                    dataType = new ghidra.program.model.data.IntegerDataType();
-                                    break;
-                                case "uint32_t":
-                                    dataType = new ghidra.program.model.data.UnsignedIntegerDataType();
-                                    break;
-                                case "long":
-                                    dataType = new ghidra.program.model.data.LongDataType();
-                                    break;
-                                case "pointer":
-                                    dataType = new ghidra.program.model.data.PointerDataType();
-                                    break;
-                            }
+                        // Find the requested data type using helper method
+                        ghidra.program.model.data.DataType dataType = parseDataType(program, dataTypeStr);
+                        
+                        // Special case for string type
+                        if (dataType == null && "string".equalsIgnoreCase(dataTypeStr)) {
+                            dataType = new ghidra.program.model.data.StringDataType();
                         }
                         
                         if (dataType == null) {
@@ -1010,8 +987,13 @@ package eu.starsong.ghidra.endpoints;
                             Msg.warn(this, "Error checking for existing code units: " + e.getMessage());
                         }
                         
-                        // Now create the data
-                        if (finalSize != null) {
+                        // Now create the data using DataUtilities (recommended API)
+                        // For arrays, we need to use createData with the array type directly
+                        if (finalDataType instanceof ArrayDataType) {
+                            // Array types are handled directly
+                            newData = DataUtilities.createData(program, addr, finalDataType, -1, false, 
+                                DataUtilities.ClearDataMode.CLEAR_SINGLE_DATA);
+                        } else if (finalSize != null) {
                             // For variable length types like strings, need to clear space first
                             if (finalDataType.getLength() <= 0 || finalDataType.getLength() != finalSize) {
                                 Msg.info(this, "Creating variable-length data with size: " + finalSize);
@@ -1029,16 +1011,19 @@ package eu.starsong.ghidra.endpoints;
                                         newData = listing.createData(addr, new ghidra.program.model.data.ByteDataType(), finalSize);
                                     }
                                 } else {
-                                    // For other variable length types, create clear space and then create
-                                    newData = listing.createData(addr, finalDataType);
+                                    // For other variable length types, use DataUtilities
+                                    newData = DataUtilities.createData(program, addr, finalDataType, -1, false, 
+                                        DataUtilities.ClearDataMode.CLEAR_SINGLE_DATA);
                                 }
                             } else {
                                 // For fixed size datatypes
-                                newData = listing.createData(addr, finalDataType);
+                                newData = DataUtilities.createData(program, addr, finalDataType, -1, false, 
+                                    DataUtilities.ClearDataMode.CLEAR_SINGLE_DATA);
                             }
                         } else {
                             // Normal data creation without size
-                            newData = listing.createData(addr, finalDataType);
+                            newData = DataUtilities.createData(program, addr, finalDataType, -1, false, 
+                                DataUtilities.ClearDataMode.CLEAR_SINGLE_DATA);
                         }
                         
                         if (newData == null) {
@@ -1317,6 +1302,119 @@ package eu.starsong.ghidra.endpoints;
         }
 
         // Note: The handleUpdateData method is already defined earlier in this file at line 477
+        
+        /**
+         * Helper method to parse a data type string, including array syntax
+         * @param program The program
+         * @param dataTypeStr The data type string (e.g., "uint8_t[8]", "byte", "int")
+         * @return The parsed DataType, or null if parsing fails
+         */
+        private ghidra.program.model.data.DataType parseDataType(Program program, String dataTypeStr) {
+            if (dataTypeStr == null || dataTypeStr.isEmpty()) {
+                return null;
+            }
+            
+            // Check if this is an array type (contains [])
+            if (dataTypeStr.contains("[") && dataTypeStr.contains("]")) {
+                try {
+                    // Parse array syntax: "uint8_t[8]" or "byte[256]"
+                    int bracketIndex = dataTypeStr.indexOf('[');
+                    String baseTypeStr = dataTypeStr.substring(0, bracketIndex).trim();
+                    String arraySizeStr = dataTypeStr.substring(bracketIndex + 1, dataTypeStr.indexOf(']'));
+                    
+                    // Parse array size
+                    int arraySize = Integer.parseInt(arraySizeStr);
+                    
+                    // Get the base data type
+                    ghidra.program.model.data.DataType baseType = null;
+                    
+                    // Map common type names
+                    switch(baseTypeStr.toLowerCase()) {
+                        case "byte":
+                        case "uint8_t":
+                            baseType = new ghidra.program.model.data.ByteDataType();
+                            break;
+                        case "char":
+                            baseType = new ghidra.program.model.data.CharDataType();
+                            break;
+                        case "word":
+                        case "uint16_t":
+                        case "ushort":
+                            baseType = new ghidra.program.model.data.WordDataType();
+                            break;
+                        case "short":
+                        case "int16_t":
+                            baseType = new ghidra.program.model.data.ShortDataType();
+                            break;
+                        case "dword":
+                        case "uint32_t":
+                        case "uint":
+                            baseType = new ghidra.program.model.data.DWordDataType();
+                            break;
+                        case "int":
+                        case "int32_t":
+                            baseType = new ghidra.program.model.data.IntegerDataType();
+                            break;
+                        case "float":
+                            baseType = new ghidra.program.model.data.FloatDataType();
+                            break;
+                        case "double":
+                            baseType = new ghidra.program.model.data.DoubleDataType();
+                            break;
+                        default:
+                            // Try to find it in the data type manager
+                            baseType = program.getDataTypeManager().getDataType("/" + baseTypeStr);
+                            if (baseType == null) {
+                                baseType = program.getDataTypeManager().findDataType("/" + baseTypeStr);
+                            }
+                            if (baseType == null) {
+                                // Fallback to byte if not found
+                                baseType = new ghidra.program.model.data.ByteDataType();
+                            }
+                            break;
+                    }
+                    
+                    // Create array data type
+                    if (baseType != null) {
+                        try {
+                            if (baseType.getLength() <= 0) {
+                                throw new Exception("Cannot create array of variable-length base type: " + baseTypeStr);
+                            }
+                            return new ArrayDataType(baseType, arraySize, baseType.getLength());
+                        } catch (Exception e) {
+                            Msg.warn(this, "Failed to create ArrayDataType: " + e.getMessage());
+                            throw e;
+                        }
+                    }
+                } catch (Exception e) {
+                    Msg.warn(this, "Failed to parse array type: " + dataTypeStr + " - " + e.getMessage());
+                }
+            }
+            
+            // Not an array, try normal type lookup
+            ghidra.program.model.data.DataType dataType = null;
+            
+            // First try built-in types
+            dataType = program.getDataTypeManager().getDataType("/" + dataTypeStr);
+            
+            // If not found, try to find it without path
+            if (dataType == null) {
+                dataType = program.getDataTypeManager().findDataType("/" + dataTypeStr);
+            }
+            
+            // If still null, try using the parser
+            if (dataType == null) {
+                try {
+                    ghidra.app.util.parser.FunctionSignatureParser parser = 
+                        new ghidra.app.util.parser.FunctionSignatureParser(program.getDataTypeManager(), null);
+                    dataType = parser.parse(null, dataTypeStr);
+                } catch (Exception e) {
+                    Msg.debug(this, "Function signature parser failed: " + e.getMessage());
+                }
+            }
+            
+            return dataType;
+        }
         
         /**
          * Handle request to list strings in the binary
