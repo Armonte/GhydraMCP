@@ -54,7 +54,7 @@ The API is organized into namespaces for different types of operations:
 - analysis_* : For program analysis
 """
 
-mcp = FastMCP("GhydraMCP", version=BRIDGE_VERSION, instructions=instructions)
+mcp = FastMCP("GhydraMCP", instructions=instructions)
 
 ghidra_host = os.environ.get("GHIDRA_HYDRA_HOST", DEFAULT_GHIDRA_HOST)
 
