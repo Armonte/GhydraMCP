@@ -470,8 +470,43 @@ public class FunctionEndpoints extends AbstractEndpoint {
      * Handle DELETE requests to delete a function using the RESTful endpoint
      */
     private void handleDeleteFunctionRESTful(HttpExchange exchange, Function function) throws IOException {
-        // Placeholder for function deletion
-        sendErrorResponse(exchange, 501, "Function deletion not implemented", "NOT_IMPLEMENTED");
+        Program program = getCurrentProgram();
+        if (program == null) {
+            sendErrorResponse(exchange, 400, "No program is currently loaded", "NO_PROGRAM_LOADED");
+            return;
+        }
+
+        String functionName = function.getName();
+        String functionAddress = function.getEntryPoint().toString();
+
+        try {
+            boolean success = TransactionHelper.executeInTransaction(program, "Delete Function", () -> {
+                return program.getFunctionManager().removeFunction(function.getEntryPoint());
+            });
+
+            if (success) {
+                // Return success response with deleted function info
+                Map<String, Object> result = new HashMap<>();
+                result.put("deleted", true);
+                result.put("name", functionName);
+                result.put("address", functionAddress);
+                result.put("message", "Function deleted successfully");
+
+                ResponseBuilder builder = new ResponseBuilder(exchange, port)
+                    .success(true)
+                    .result(result);
+
+                // Add HATEOAS links
+                builder.addLink("functions", "/functions");
+                builder.addLink("program", "/program");
+
+                sendJsonResponse(exchange, builder.build(), 200);
+            } else {
+                sendErrorResponse(exchange, 500, "Failed to delete function", "DELETE_FAILED");
+            }
+        } catch (Exception e) {
+            sendErrorResponse(exchange, 500, "Failed to delete function: " + e.getMessage(), "DELETE_FAILED");
+        }
     }
     
     /**
@@ -976,8 +1011,24 @@ public class FunctionEndpoints extends AbstractEndpoint {
      * Handle DELETE requests to delete a function
      */
     private void handleDeleteFunction(HttpExchange exchange, String functionName) throws IOException {
-        // This is a placeholder - actual implementation would delete the function
-        sendErrorResponse(exchange, 501, "Function deletion not implemented", "NOT_IMPLEMENTED");
+        Program program = getCurrentProgram();
+        if (program == null) {
+            sendErrorResponse(exchange, 503, "No program is currently loaded", "NO_PROGRAM_LOADED");
+            return;
+        }
+
+        Function function = findFunctionByName(functionName);
+        if (function == null) {
+            // Try by address
+            function = findFunctionByAddress(functionName);
+        }
+
+        if (function == null) {
+            sendErrorResponse(exchange, 404, "Function not found: " + functionName, "FUNCTION_NOT_FOUND");
+            return;
+        }
+
+        handleDeleteFunctionRESTful(exchange, function);
     }
 
     /**

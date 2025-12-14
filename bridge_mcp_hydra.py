@@ -1479,6 +1479,41 @@ def functions_create(address: str, port: int = None) -> dict:
     return simplify_response(response)
 
 @mcp.tool()
+def functions_delete(name: str = None, address: str = None, port: int = None) -> dict:
+    """Delete a function at the specified address or by name
+
+    This removes the function definition but leaves the underlying code/data.
+    Use this to convert misidentified functions back to undefined code or data.
+
+    Args:
+        name: Function name (mutually exclusive with address)
+        address: Function address in hex format (mutually exclusive with name)
+        port: Specific Ghidra instance port (optional)
+
+    Returns:
+        dict: Operation result with the deleted function information
+    """
+    if not (name or address):
+        return {
+            "success": False,
+            "error": {
+                "code": "MISSING_PARAMETER",
+                "message": "Either name or address parameter is required"
+            },
+            "timestamp": int(time.time() * 1000)
+        }
+
+    port = _get_instance_port(port)
+
+    if address:
+        endpoint = f"functions/{address}"
+    else:
+        endpoint = f"functions/by-name/{quote(name)}"
+
+    response = safe_delete(port, endpoint)
+    return simplify_response(response)
+
+@mcp.tool()
 def functions_rename(old_name: str = None, address: str = None, new_name: str = "", port: int = None) -> dict:
     """Rename a function
     
