@@ -1,7 +1,7 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
-#     "mcp==1.6.0",
+#     "mcp>=1.8.0",
 #     "requests==2.32.3",
 # ]
 # ///
@@ -18,6 +18,7 @@ from urllib.parse import quote, urlencode, urlparse
 
 import requests
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 # ================= Core Infrastructure =================
 
@@ -1153,7 +1154,12 @@ def reverse_engineer_binary_prompt(port: int = None):
 # Since we can't use tool groups, we'll use namespaces in the function names
 
 # Instance management tools
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="List Ghidra Instances",
+        readOnlyHint=True,
+    ),
+)
 def instances_list() -> dict:
     """List all active Ghidra instances
 
@@ -1269,7 +1275,12 @@ def instances_use(port: int) -> str:
         project = info.get("project", "unknown project")
         return f"Now using Ghidra instance on port {port} with {program} in project {project}"
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Get Current Instance",
+        readOnlyHint=True,
+    ),
+)
 def instances_current() -> dict:
     """Get information about the current working Ghidra instance
     
@@ -1279,9 +1290,14 @@ def instances_current() -> dict:
     return ghidra_instance(port=current_instance_port)
 
 # Function tools
-@mcp.tool()
-def functions_list(offset: int = 0, limit: int = 100, 
-                  name_contains: str = None, 
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="List Functions",
+        readOnlyHint=True,
+    ),
+)
+def functions_list(offset: int = 0, limit: int = 100,
+                  name_contains: str = None,
                   name_matches_regex: str = None,
                   port: int = None) -> dict:
     """List functions with filtering and pagination
@@ -1350,7 +1366,12 @@ def functions_get(name: str = None, address: str = None, port: int = None) -> di
     response = safe_get(port, endpoint)
     return simplify_response(response)
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Decompile Function",
+        readOnlyHint=True,
+    ),
+)
 def functions_decompile(name: str = None, address: str = None,
                         syntax_tree: bool = False, style: str = "normalize",
                         start_line: int = None, end_line: int = None, max_lines: int = None,
@@ -1513,7 +1534,12 @@ def functions_delete(name: str = None, address: str = None, port: int = None) ->
     response = safe_delete(port, endpoint)
     return simplify_response(response)
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Rename Function",
+        destructiveHint=True,
+    ),
+)
 def functions_rename(old_name: str = None, address: str = None, new_name: str = "", port: int = None) -> dict:
     """Rename a function
     
@@ -1620,7 +1646,12 @@ def functions_get_variables(name: str = None, address: str = None, port: int = N
     return simplify_response(response)
 
 # Memory tools
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Read Memory",
+        readOnlyHint=True,
+    ),
+)
 def memory_read(address: str, length: int = 16, format: str = "hex", port: int = None) -> dict:
     """Read bytes from memory
     
@@ -1685,7 +1716,12 @@ def memory_read(address: str, length: int = 16, format: str = "hex", port: int =
     
     return simplified
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="List Memory Blocks",
+        readOnlyHint=True,
+    ),
+)
 def memory_list_blocks(port: int = None) -> dict:
     """List all memory blocks/segments in the program
 
@@ -1876,7 +1912,12 @@ def data_list(offset: int = 0, limit: int = 100, addr: str = None,
     
     return simplified
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Create Data",
+        destructiveHint=True,
+    ),
+)
 def data_create(address: str, data_type: str, size: int = None, port: int = None) -> dict:
     """Define a new data item at the specified address
     
@@ -1938,7 +1979,12 @@ def data_list_strings(offset: int = 0, limit: int = 2000, filter: str = None, po
     response = safe_get(port, "strings", params)
     return simplify_response(response)
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Rename Data",
+        destructiveHint=True,
+    ),
+)
 def data_rename(address: str, name: str, port: int = None) -> dict:
     """Rename a data item
     
@@ -2001,7 +2047,12 @@ def data_delete(address: str, port: int = None) -> dict:
     response = safe_post(port, "data/delete", payload)
     return simplify_response(response)
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Set Data Type",
+        destructiveHint=True,
+    ),
+)
 def data_set_type(address: str, data_type: str, port: int = None) -> dict:
     """Set the data type of a data item
     

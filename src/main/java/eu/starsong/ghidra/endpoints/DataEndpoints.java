@@ -1404,26 +1404,47 @@ package eu.starsong.ghidra.endpoints;
             
             // Not an array, try normal type lookup
             ghidra.program.model.data.DataType dataType = null;
-            
-            // First try built-in types
-            dataType = program.getDataTypeManager().getDataType("/" + dataTypeStr);
-            
+
+            // First try with the exact path (handles "/arika/PAC_Header" format)
+            if (dataTypeStr.startsWith("/")) {
+                dataType = program.getDataTypeManager().getDataType(dataTypeStr);
+            }
+
+            // Try as a root type
+            if (dataType == null) {
+                dataType = program.getDataTypeManager().getDataType("/" + dataTypeStr);
+            }
+
             // If not found, try to find it without path
             if (dataType == null) {
                 dataType = program.getDataTypeManager().findDataType("/" + dataTypeStr);
             }
-            
+
+            // Search all data types by name (for custom structs in categories like /arika/)
+            if (dataType == null) {
+                final ghidra.program.model.data.DataType[] result = new ghidra.program.model.data.DataType[1];
+                final String searchName = dataTypeStr.startsWith("/") ?
+                    dataTypeStr.substring(dataTypeStr.lastIndexOf('/') + 1) : dataTypeStr;
+                program.getDataTypeManager().getAllDataTypes().forEachRemaining(dt -> {
+                    if (dt.getName().equals(searchName) && result[0] == null) {
+                        result[0] = dt;
+                        Msg.info(this, "Found data type by name search: " + dt.getPathName());
+                    }
+                });
+                dataType = result[0];
+            }
+
             // If still null, try using the parser
             if (dataType == null) {
                 try {
-                    ghidra.app.util.parser.FunctionSignatureParser parser = 
+                    ghidra.app.util.parser.FunctionSignatureParser parser =
                         new ghidra.app.util.parser.FunctionSignatureParser(program.getDataTypeManager(), null);
                     dataType = parser.parse(null, dataTypeStr);
                 } catch (Exception e) {
                     Msg.debug(this, "Function signature parser failed: " + e.getMessage());
                 }
             }
-            
+
             return dataType;
         }
         
