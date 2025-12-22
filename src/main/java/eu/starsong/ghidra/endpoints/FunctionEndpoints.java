@@ -1429,6 +1429,10 @@ public class FunctionEndpoints extends AbstractEndpoint {
                         if (results.decompileCompleted()) {
                             HighFunction highFunc = results.getHighFunction();
                             if (highFunc != null) {
+                                // CRITICAL: Commit decompiler-generated variable names to database first
+                                // Without this, variables like uVar1, local_10 won't exist in DB yet
+                                HighFunctionDBUtil.commitLocalNamesToDatabase(highFunc, SourceType.ANALYSIS);
+
                                 // Find the variable in the high function
                                 for (Iterator<HighSymbol> symbolIter = highFunc.getLocalSymbolMap().getSymbols(); symbolIter.hasNext();) {
                                     HighSymbol symbol = symbolIter.next();

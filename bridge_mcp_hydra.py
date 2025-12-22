@@ -1686,6 +1686,56 @@ def memory_read(address: str, length: int = 16, format: str = "hex", port: int =
     return simplified
 
 @mcp.tool()
+def memory_list_blocks(port: int = None) -> dict:
+    """List all memory blocks/segments in the program
+
+    Shows all address spaces and memory regions including overlays.
+    Useful for finding loaded overlays and their address space names.
+
+    Args:
+        port: Specific Ghidra instance port (optional)
+
+    Returns:
+        dict: List of memory blocks with name, start, end, size, and permissions
+    """
+    port = _get_instance_port(port)
+    if port is None:
+        return {
+            "success": False,
+            "error": {"code": "NO_INSTANCE", "message": "No Ghidra instance available"},
+            "timestamp": int(time.time() * 1000)
+        }
+
+    try:
+        url = get_instance_url(port)
+        response = requests.get(
+            f"{url}/memory/blocks",
+            timeout=10
+        )
+
+        if response.status_code == 200:
+            data = response.json()
+            blocks = data.get("result", [])
+            return {
+                "success": True,
+                "blocks": blocks,
+                "count": len(blocks),
+                "timestamp": int(time.time() * 1000)
+            }
+        else:
+            return {
+                "success": False,
+                "error": {"code": "REQUEST_FAILED", "message": f"HTTP {response.status_code}"},
+                "timestamp": int(time.time() * 1000)
+            }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": {"code": "EXCEPTION", "message": str(e)},
+            "timestamp": int(time.time() * 1000)
+        }
+
+@mcp.tool()
 def memory_write(address: str, bytes_data: str, format: str = "hex", port: int = None) -> dict:
     """Write bytes to memory (use with caution)
     
@@ -2209,6 +2259,165 @@ def structs_delete(name: str, port: int = None) -> dict:
 
     payload = {"name": name}
     response = safe_post(port, "structs/delete", payload)
+    return simplify_response(response)
+
+@mcp.tool()
+def structs_rename(old_name: str, new_name: str, port: int = None) -> dict:
+    """Rename a struct data type
+
+    Args:
+        old_name: Current name of the struct to rename
+        new_name: New name for the struct
+        port: Specific Ghidra instance port (optional)
+
+    Returns:
+        dict: Operation result with old and new names
+    """
+    if not old_name:
+        return {
+            "success": False,
+            "error": {
+                "code": "MISSING_PARAMETER",
+                "message": "old_name parameter is required"
+            },
+            "timestamp": int(time.time() * 1000)
+        }
+    if not new_name:
+        return {
+            "success": False,
+            "error": {
+                "code": "MISSING_PARAMETER",
+                "message": "new_name parameter is required"
+            },
+            "timestamp": int(time.time() * 1000)
+        }
+
+    port = _get_instance_port(port)
+
+    payload = {"oldName": old_name, "newName": new_name}
+    response = safe_post(port, "structs/rename", payload)
+    return simplify_response(response)
+
+# Enum tools
+@mcp.tool()
+def enums_list(offset: int = 0, limit: int = 100, port: int = None) -> dict:
+    """List all enum data types in the program
+
+    Args:
+        offset: Pagination offset (default: 0)
+        limit: Maximum items to return (default: 100)
+        port: Specific Ghidra instance port (optional)
+
+    Returns:
+        dict: List of enums with name, size, and value count
+    """
+    port = _get_instance_port(port)
+    params = {"offset": str(offset), "limit": str(limit)}
+    response = safe_get(port, "enums", params)
+    return simplify_response(response)
+
+@mcp.tool()
+def enums_get(name: str, port: int = None) -> dict:
+    """Get detailed information about a specific enum including all values
+
+    Args:
+        name: Enum name
+        port: Specific Ghidra instance port (optional)
+
+    Returns:
+        dict: Enum details including all values with their names and numeric values
+    """
+    if not name:
+        return {"success": False, "error": {"code": "MISSING_PARAMETER", "message": "Enum name required"}}
+
+    port = _get_instance_port(port)
+    response = safe_get(port, "enums", {"name": name})
+    return simplify_response(response)
+
+@mcp.tool()
+def enums_create(name: str, size: int = 4, category: str = None, port: int = None) -> dict:
+    """Create a new enum data type
+
+    Args:
+        name: Name for the new enum
+        size: Size in bytes (1, 2, 4, or 8, default: 4)
+        category: Category path for the enum (e.g. "/arika")
+        port: Specific Ghidra instance port (optional)
+
+    Returns:
+        dict: Created enum information
+    """
+    if not name:
+        return {"success": False, "error": {"code": "MISSING_PARAMETER", "message": "Enum name required"}}
+
+    port = _get_instance_port(port)
+    payload = {"name": name, "size": str(size)}
+    if category:
+        payload["category"] = category
+    response = safe_post(port, "enums/create", payload)
+    return simplify_response(response)
+
+@mcp.tool()
+def enums_add_value(enum_name: str, value_name: str, value: int, port: int = None) -> dict:
+    """Add a value to an existing enum
+
+    Args:
+        enum_name: Name of the enum to modify
+        value_name: Name for the new enum value
+        value: Numeric value (can be hex like 0x10)
+        port: Specific Ghidra instance port (optional)
+
+    Returns:
+        dict: Operation result with updated enum info
+    """
+    if not enum_name:
+        return {"success": False, "error": {"code": "MISSING_PARAMETER", "message": "enum_name required"}}
+    if not value_name:
+        return {"success": False, "error": {"code": "MISSING_PARAMETER", "message": "value_name required"}}
+
+    port = _get_instance_port(port)
+    payload = {"enum": enum_name, "valueName": value_name, "value": str(value)}
+    response = safe_post(port, "enums/addvalue", payload)
+    return simplify_response(response)
+
+@mcp.tool()
+def enums_delete(name: str, port: int = None) -> dict:
+    """Delete an enum data type
+
+    Args:
+        name: Name of the enum to delete
+        port: Specific Ghidra instance port (optional)
+
+    Returns:
+        dict: Operation result confirming deletion
+    """
+    if not name:
+        return {"success": False, "error": {"code": "MISSING_PARAMETER", "message": "Enum name required"}}
+
+    port = _get_instance_port(port)
+    payload = {"name": name}
+    response = safe_post(port, "enums/delete", payload)
+    return simplify_response(response)
+
+# Data type listing
+@mcp.tool()
+def types_list(category: str = None, offset: int = 0, limit: int = 100, port: int = None) -> dict:
+    """List all data types with optional category filtering
+
+    Args:
+        category: Filter by category path (e.g. "/arika", "/LIBGTE.H")
+        offset: Pagination offset (default: 0)
+        limit: Maximum items to return (default: 100)
+        port: Specific Ghidra instance port (optional)
+
+    Returns:
+        dict: List of all data types with name, size, category, and kind (struct/enum/typedef/etc)
+    """
+    port = _get_instance_port(port)
+    params = {"offset": str(offset), "limit": str(limit)}
+    if category:
+        params["category"] = category
+    response = safe_get(port, "types", params)
     return simplify_response(response)
 
 # Analysis tools

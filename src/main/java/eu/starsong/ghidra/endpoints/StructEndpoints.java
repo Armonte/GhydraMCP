@@ -90,6 +90,73 @@ public class StructEndpoints extends AbstractEndpoint {
                 sendErrorResponse(exchange, 500, "Internal server error: " + e.getMessage());
             }
         });
+        server.createContext("/structs/rename", exchange -> {
+            try {
+                if ("POST".equals(exchange.getRequestMethod())) {
+                    Map<String, String> params = parseJsonPostParams(exchange);
+                    handleRenameStruct(exchange, params);
+                } else {
+                    sendErrorResponse(exchange, 405, "Method Not Allowed");
+                }
+            } catch (Exception e) {
+                Msg.error(this, "Error in /structs/rename endpoint", e);
+                sendErrorResponse(exchange, 500, "Internal server error: " + e.getMessage());
+            }
+        });
+        // Enum endpoints
+        server.createContext("/enums", this::handleEnums);
+        server.createContext("/enums/create", exchange -> {
+            try {
+                if ("POST".equals(exchange.getRequestMethod())) {
+                    Map<String, String> params = parseJsonPostParams(exchange);
+                    handleCreateEnum(exchange, params);
+                } else {
+                    sendErrorResponse(exchange, 405, "Method Not Allowed");
+                }
+            } catch (Exception e) {
+                Msg.error(this, "Error in /enums/create endpoint", e);
+                sendErrorResponse(exchange, 500, "Internal server error: " + e.getMessage());
+            }
+        });
+        server.createContext("/enums/addvalue", exchange -> {
+            try {
+                if ("POST".equals(exchange.getRequestMethod())) {
+                    Map<String, String> params = parseJsonPostParams(exchange);
+                    handleAddEnumValue(exchange, params);
+                } else {
+                    sendErrorResponse(exchange, 405, "Method Not Allowed");
+                }
+            } catch (Exception e) {
+                Msg.error(this, "Error in /enums/addvalue endpoint", e);
+                sendErrorResponse(exchange, 500, "Internal server error: " + e.getMessage());
+            }
+        });
+        server.createContext("/enums/delete", exchange -> {
+            try {
+                if ("POST".equals(exchange.getRequestMethod())) {
+                    Map<String, String> params = parseJsonPostParams(exchange);
+                    handleDeleteEnum(exchange, params);
+                } else {
+                    sendErrorResponse(exchange, 405, "Method Not Allowed");
+                }
+            } catch (Exception e) {
+                Msg.error(this, "Error in /enums/delete endpoint", e);
+                sendErrorResponse(exchange, 500, "Internal server error: " + e.getMessage());
+            }
+        });
+        // List all types endpoint
+        server.createContext("/types", exchange -> {
+            try {
+                if ("GET".equals(exchange.getRequestMethod())) {
+                    handleListTypes(exchange);
+                } else {
+                    sendErrorResponse(exchange, 405, "Method Not Allowed");
+                }
+            } catch (Exception e) {
+                Msg.error(this, "Error in /types endpoint", e);
+                sendErrorResponse(exchange, 500, "Internal server error: " + e.getMessage());
+            }
+        });
     }
 
     /**
@@ -675,6 +742,98 @@ public class StructEndpoints extends AbstractEndpoint {
     }
 
     /**
+     * Rename a struct data type
+     * POST /structs/rename
+     * Required params: oldName, newName
+     */
+    private void handleRenameStruct(HttpExchange exchange, Map<String, String> params) throws IOException {
+        try {
+            String oldName = params.get("oldName");
+            String newName = params.get("newName");
+
+            if (oldName == null || oldName.isEmpty()) {
+                sendErrorResponse(exchange, 400, "Missing required parameter: oldName", "MISSING_PARAMETERS");
+                return;
+            }
+            if (newName == null || newName.isEmpty()) {
+                sendErrorResponse(exchange, 400, "Missing required parameter: newName", "MISSING_PARAMETERS");
+                return;
+            }
+
+            Program program = getCurrentProgram();
+            if (program == null) {
+                sendErrorResponse(exchange, 400, "No program loaded", "NO_PROGRAM_LOADED");
+                return;
+            }
+
+            Map<String, Object> resultMap = new HashMap<>();
+            resultMap.put("oldName", oldName);
+            resultMap.put("newName", newName);
+
+            try {
+                TransactionHelper.executeInTransaction(program, "Rename Struct", () -> {
+                    DataTypeManager dtm = program.getDataTypeManager();
+
+                    // Find the struct - handle both full paths and simple names
+                    DataType dataType = null;
+                    if (oldName.startsWith("/")) {
+                        dataType = dtm.getDataType(oldName);
+                        if (dataType == null) {
+                            dataType = dtm.findDataType(oldName);
+                        }
+                    } else {
+                        dataType = findStructByName(dtm, oldName);
+                    }
+
+                    if (dataType == null) {
+                        throw new Exception("Struct not found: " + oldName);
+                    }
+
+                    if (!(dataType instanceof Structure)) {
+                        throw new Exception("Data type is not a struct: " + oldName);
+                    }
+
+                    // Store original info
+                    resultMap.put("originalPath", dataType.getPathName());
+                    resultMap.put("category", dataType.getCategoryPath().getPath());
+
+                    // Rename the struct
+                    try {
+                        dataType.setName(newName);
+                    } catch (Exception e) {
+                        throw new Exception("Failed to rename struct: " + e.getMessage());
+                    }
+
+                    resultMap.put("newPath", dataType.getPathName());
+
+                    return null;
+                });
+
+                resultMap.put("message", "Struct renamed successfully");
+
+                ResponseBuilder builder = new ResponseBuilder(exchange, port)
+                    .success(true)
+                    .result(resultMap);
+
+                builder.addLink("struct", "/structs?name=" + newName);
+                builder.addLink("structs", "/structs");
+                builder.addLink("program", "/program");
+
+                sendJsonResponse(exchange, builder.build(), 200);
+            } catch (TransactionException e) {
+                Msg.error(this, "Transaction failed: Rename Struct", e);
+                sendErrorResponse(exchange, 500, "Failed to rename struct: " + e.getMessage(), "TRANSACTION_ERROR");
+            } catch (Exception e) {
+                Msg.error(this, "Error renaming struct", e);
+                sendErrorResponse(exchange, 400, "Error renaming struct: " + e.getMessage(), "INVALID_PARAMETER");
+            }
+        } catch (Exception e) {
+            Msg.error(this, "Unexpected error renaming struct", e);
+            sendErrorResponse(exchange, 500, "Error renaming struct: " + e.getMessage(), "INTERNAL_ERROR");
+        }
+    }
+
+    /**
      * Build a detailed information map for a struct including all fields
      */
     private Map<String, Object> buildStructInfo(Structure struct) {
@@ -721,15 +880,45 @@ public class StructEndpoints extends AbstractEndpoint {
     }
 
     /**
-     * Find a data type by name, trying multiple lookup methods
+     * Find a data type by name, trying multiple lookup methods.
+     * Supports typed pointers like "struct_4 *" or "struct_4*" by parsing
+     * the pointer syntax and creating a PointerDataType wrapping the base type.
      */
     private DataType findDataType(DataTypeManager dtm, String typeName) {
+        // Handle typed pointers (e.g., "struct_4 *", "struct_4*", "NodeChain *")
+        String trimmed = typeName.trim();
+        if (trimmed.endsWith("*")) {
+            // Strip the pointer suffix and get the base type name
+            String baseTypeName = trimmed.substring(0, trimmed.length() - 1).trim();
+            if (!baseTypeName.isEmpty()) {
+                // Recursively find the base type
+                DataType baseType = findDataType(dtm, baseTypeName);
+                if (baseType != null) {
+                    // Create a typed pointer to the base type
+                    return new PointerDataType(baseType);
+                }
+            }
+            // Fall back to generic pointer if base type not found
+            return new PointerDataType();
+        }
+
         // Try direct lookup with path
         DataType dataType = dtm.getDataType("/" + typeName);
 
         // Try without path
         if (dataType == null) {
             dataType = dtm.findDataType("/" + typeName);
+        }
+
+        // Try searching by simple name (for structs in categories like /arika/struct_4)
+        if (dataType == null) {
+            final DataType[] result = new DataType[1];
+            dtm.getAllDataTypes().forEachRemaining(dt -> {
+                if (dt.getName().equals(typeName) && result[0] == null) {
+                    result[0] = dt;
+                }
+            });
+            dataType = result[0];
         }
 
         // Try built-in primitive types
@@ -740,6 +929,15 @@ public class StructEndpoints extends AbstractEndpoint {
                     break;
                 case "char":
                     dataType = new CharDataType();
+                    break;
+                case "uchar":
+                    dataType = new UnsignedCharDataType();
+                    break;
+                case "short":
+                    dataType = new ShortDataType();
+                    break;
+                case "ushort":
+                    dataType = new UnsignedShortDataType();
                     break;
                 case "word":
                     dataType = new WordDataType();
@@ -759,8 +957,14 @@ public class StructEndpoints extends AbstractEndpoint {
                 case "int":
                     dataType = new IntegerDataType();
                     break;
+                case "uint":
+                    dataType = new UnsignedIntegerDataType();
+                    break;
                 case "long":
                     dataType = new LongDataType();
+                    break;
+                case "ulong":
+                    dataType = new UnsignedLongDataType();
                     break;
                 case "pointer":
                     dataType = new PointerDataType();
@@ -772,5 +976,421 @@ public class StructEndpoints extends AbstractEndpoint {
         }
 
         return dataType;
+    }
+
+    // ==================== ENUM ENDPOINTS ====================
+
+    /**
+     * Handle GET /enums - list all enums, or GET /enums?name=X - get specific enum details
+     */
+    private void handleEnums(HttpExchange exchange) throws IOException {
+        try {
+            if ("GET".equals(exchange.getRequestMethod())) {
+                Map<String, String> qparams = parseQueryParams(exchange);
+                String enumName = qparams.get("name");
+
+                if (enumName != null && !enumName.isEmpty()) {
+                    handleGetEnum(exchange, enumName);
+                } else {
+                    handleListEnums(exchange);
+                }
+            } else {
+                sendErrorResponse(exchange, 405, "Method Not Allowed");
+            }
+        } catch (Exception e) {
+            Msg.error(this, "Error in /enums endpoint", e);
+            sendErrorResponse(exchange, 500, "Internal server error: " + e.getMessage());
+        }
+    }
+
+    /**
+     * List all enum data types in the program
+     */
+    private void handleListEnums(HttpExchange exchange) throws IOException {
+        try {
+            Map<String, String> qparams = parseQueryParams(exchange);
+            int offset = parseIntOrDefault(qparams.get("offset"), 0);
+            int limit = parseIntOrDefault(qparams.get("limit"), 100);
+
+            Program program = getCurrentProgram();
+            if (program == null) {
+                sendErrorResponse(exchange, 400, "No program loaded", "NO_PROGRAM_LOADED");
+                return;
+            }
+
+            DataTypeManager dtm = program.getDataTypeManager();
+            List<Map<String, Object>> enumList = new ArrayList<>();
+
+            dtm.getAllDataTypes().forEachRemaining(dataType -> {
+                if (dataType instanceof ghidra.program.model.data.Enum) {
+                    ghidra.program.model.data.Enum enumType = (ghidra.program.model.data.Enum) dataType;
+                    Map<String, Object> enumInfo = new HashMap<>();
+                    enumInfo.put("name", enumType.getName());
+                    enumInfo.put("path", enumType.getPathName());
+                    enumInfo.put("size", enumType.getLength());
+                    enumInfo.put("numValues", enumType.getCount());
+                    enumInfo.put("category", enumType.getCategoryPath().getPath());
+                    enumList.add(enumInfo);
+                }
+            });
+
+            enumList.sort(Comparator.comparing(e -> (String) e.get("name")));
+
+            ResponseBuilder builder = new ResponseBuilder(exchange, port).success(true);
+            List<Map<String, Object>> paginated = applyPagination(enumList, offset, limit, builder, "/enums");
+            builder.result(paginated);
+            builder.addLink("program", "/program");
+
+            sendJsonResponse(exchange, builder.build(), 200);
+        } catch (Exception e) {
+            Msg.error(this, "Error listing enums", e);
+            sendErrorResponse(exchange, 500, "Error listing enums: " + e.getMessage(), "INTERNAL_ERROR");
+        }
+    }
+
+    /**
+     * Get details of a specific enum including all values
+     */
+    private void handleGetEnum(HttpExchange exchange, String enumName) throws IOException {
+        try {
+            Program program = getCurrentProgram();
+            if (program == null) {
+                sendErrorResponse(exchange, 400, "No program loaded", "NO_PROGRAM_LOADED");
+                return;
+            }
+
+            DataTypeManager dtm = program.getDataTypeManager();
+            ghidra.program.model.data.Enum enumType = findEnumByName(dtm, enumName);
+
+            if (enumType == null) {
+                sendErrorResponse(exchange, 404, "Enum not found: " + enumName, "ENUM_NOT_FOUND");
+                return;
+            }
+
+            Map<String, Object> enumInfo = new HashMap<>();
+            enumInfo.put("name", enumType.getName());
+            enumInfo.put("path", enumType.getPathName());
+            enumInfo.put("size", enumType.getLength());
+            enumInfo.put("category", enumType.getCategoryPath().getPath());
+
+            // Add all values
+            List<Map<String, Object>> values = new ArrayList<>();
+            for (String name : enumType.getNames()) {
+                Map<String, Object> valueInfo = new HashMap<>();
+                valueInfo.put("name", name);
+                valueInfo.put("value", enumType.getValue(name));
+                values.add(valueInfo);
+            }
+            enumInfo.put("values", values);
+            enumInfo.put("numValues", values.size());
+
+            ResponseBuilder builder = new ResponseBuilder(exchange, port)
+                .success(true)
+                .result(enumInfo);
+            builder.addLink("enums", "/enums");
+            builder.addLink("program", "/program");
+
+            sendJsonResponse(exchange, builder.build(), 200);
+        } catch (Exception e) {
+            Msg.error(this, "Error getting enum details", e);
+            sendErrorResponse(exchange, 500, "Error getting enum: " + e.getMessage(), "INTERNAL_ERROR");
+        }
+    }
+
+    /**
+     * Create a new enum data type
+     * POST /enums/create
+     * Required params: name
+     * Optional params: size (1, 2, 4, or 8 bytes, default 4), category
+     */
+    private void handleCreateEnum(HttpExchange exchange, Map<String, String> params) throws IOException {
+        try {
+            String enumName = params.get("name");
+            String sizeStr = params.get("size");
+            String category = params.get("category");
+
+            if (enumName == null || enumName.isEmpty()) {
+                sendErrorResponse(exchange, 400, "Missing required parameter: name", "MISSING_PARAMETERS");
+                return;
+            }
+
+            int size = 4; // default 4 bytes
+            if (sizeStr != null && !sizeStr.isEmpty()) {
+                size = Integer.parseInt(sizeStr);
+                if (size != 1 && size != 2 && size != 4 && size != 8) {
+                    sendErrorResponse(exchange, 400, "Invalid size: must be 1, 2, 4, or 8", "INVALID_PARAMETER");
+                    return;
+                }
+            }
+
+            Program program = getCurrentProgram();
+            if (program == null) {
+                sendErrorResponse(exchange, 400, "No program loaded", "NO_PROGRAM_LOADED");
+                return;
+            }
+
+            Map<String, Object> resultMap = new HashMap<>();
+            resultMap.put("name", enumName);
+            final int finalSize = size;
+
+            try {
+                TransactionHelper.executeInTransaction(program, "Create Enum", () -> {
+                    DataTypeManager dtm = program.getDataTypeManager();
+
+                    CategoryPath catPath = (category != null && !category.isEmpty())
+                        ? new CategoryPath(category) : CategoryPath.ROOT;
+
+                    EnumDataType enumType = new EnumDataType(catPath, enumName, finalSize);
+                    ghidra.program.model.data.Enum addedEnum =
+                        (ghidra.program.model.data.Enum) dtm.addDataType(enumType, DataTypeConflictHandler.DEFAULT_HANDLER);
+
+                    resultMap.put("path", addedEnum.getPathName());
+                    resultMap.put("category", addedEnum.getCategoryPath().getPath());
+                    resultMap.put("size", addedEnum.getLength());
+
+                    return null;
+                });
+
+                resultMap.put("message", "Enum created successfully");
+
+                ResponseBuilder builder = new ResponseBuilder(exchange, port)
+                    .success(true)
+                    .result(resultMap);
+                builder.addLink("enum", "/enums?name=" + enumName);
+                builder.addLink("enums", "/enums");
+
+                sendJsonResponse(exchange, builder.build(), 201);
+            } catch (TransactionException e) {
+                sendErrorResponse(exchange, 500, "Failed to create enum: " + e.getMessage(), "TRANSACTION_ERROR");
+            }
+        } catch (Exception e) {
+            Msg.error(this, "Error creating enum", e);
+            sendErrorResponse(exchange, 500, "Error creating enum: " + e.getMessage(), "INTERNAL_ERROR");
+        }
+    }
+
+    /**
+     * Add a value to an existing enum
+     * POST /enums/addvalue
+     * Required params: enum (name), valueName, value
+     */
+    private void handleAddEnumValue(HttpExchange exchange, Map<String, String> params) throws IOException {
+        try {
+            String enumName = params.get("enum");
+            String valueName = params.get("valueName");
+            String valueStr = params.get("value");
+
+            if (enumName == null || enumName.isEmpty()) {
+                sendErrorResponse(exchange, 400, "Missing required parameter: enum", "MISSING_PARAMETERS");
+                return;
+            }
+            if (valueName == null || valueName.isEmpty()) {
+                sendErrorResponse(exchange, 400, "Missing required parameter: valueName", "MISSING_PARAMETERS");
+                return;
+            }
+            if (valueStr == null || valueStr.isEmpty()) {
+                sendErrorResponse(exchange, 400, "Missing required parameter: value", "MISSING_PARAMETERS");
+                return;
+            }
+
+            long value;
+            try {
+                if (valueStr.startsWith("0x") || valueStr.startsWith("0X")) {
+                    value = Long.parseLong(valueStr.substring(2), 16);
+                } else {
+                    value = Long.parseLong(valueStr);
+                }
+            } catch (NumberFormatException e) {
+                sendErrorResponse(exchange, 400, "Invalid value: " + valueStr, "INVALID_PARAMETER");
+                return;
+            }
+
+            Program program = getCurrentProgram();
+            if (program == null) {
+                sendErrorResponse(exchange, 400, "No program loaded", "NO_PROGRAM_LOADED");
+                return;
+            }
+
+            Map<String, Object> resultMap = new HashMap<>();
+            resultMap.put("enum", enumName);
+            resultMap.put("valueName", valueName);
+            resultMap.put("value", value);
+
+            try {
+                TransactionHelper.executeInTransaction(program, "Add Enum Value", () -> {
+                    DataTypeManager dtm = program.getDataTypeManager();
+                    ghidra.program.model.data.Enum enumType = findEnumByName(dtm, enumName);
+
+                    if (enumType == null) {
+                        throw new Exception("Enum not found: " + enumName);
+                    }
+
+                    enumType.add(valueName, value);
+                    resultMap.put("numValues", enumType.getCount());
+
+                    return null;
+                });
+
+                resultMap.put("message", "Enum value added successfully");
+
+                ResponseBuilder builder = new ResponseBuilder(exchange, port)
+                    .success(true)
+                    .result(resultMap);
+                builder.addLink("enum", "/enums?name=" + enumName);
+
+                sendJsonResponse(exchange, builder.build(), 200);
+            } catch (TransactionException e) {
+                sendErrorResponse(exchange, 500, "Failed to add enum value: " + e.getMessage(), "TRANSACTION_ERROR");
+            }
+        } catch (Exception e) {
+            Msg.error(this, "Error adding enum value", e);
+            sendErrorResponse(exchange, 500, "Error adding enum value: " + e.getMessage(), "INTERNAL_ERROR");
+        }
+    }
+
+    /**
+     * Delete an enum data type
+     * POST /enums/delete
+     * Required params: name
+     */
+    private void handleDeleteEnum(HttpExchange exchange, Map<String, String> params) throws IOException {
+        try {
+            String enumName = params.get("name");
+
+            if (enumName == null || enumName.isEmpty()) {
+                sendErrorResponse(exchange, 400, "Missing required parameter: name", "MISSING_PARAMETERS");
+                return;
+            }
+
+            Program program = getCurrentProgram();
+            if (program == null) {
+                sendErrorResponse(exchange, 400, "No program loaded", "NO_PROGRAM_LOADED");
+                return;
+            }
+
+            Map<String, Object> resultMap = new HashMap<>();
+            resultMap.put("name", enumName);
+
+            try {
+                TransactionHelper.executeInTransaction(program, "Delete Enum", () -> {
+                    DataTypeManager dtm = program.getDataTypeManager();
+                    ghidra.program.model.data.Enum enumType = findEnumByName(dtm, enumName);
+
+                    if (enumType == null) {
+                        throw new Exception("Enum not found: " + enumName);
+                    }
+
+                    resultMap.put("path", enumType.getPathName());
+                    dtm.remove(enumType, null);
+
+                    return null;
+                });
+
+                resultMap.put("message", "Enum deleted successfully");
+
+                ResponseBuilder builder = new ResponseBuilder(exchange, port)
+                    .success(true)
+                    .result(resultMap);
+                builder.addLink("enums", "/enums");
+
+                sendJsonResponse(exchange, builder.build(), 200);
+            } catch (TransactionException e) {
+                sendErrorResponse(exchange, 500, "Failed to delete enum: " + e.getMessage(), "TRANSACTION_ERROR");
+            }
+        } catch (Exception e) {
+            Msg.error(this, "Error deleting enum", e);
+            sendErrorResponse(exchange, 500, "Error deleting enum: " + e.getMessage(), "INTERNAL_ERROR");
+        }
+    }
+
+    /**
+     * Find an enum by name
+     */
+    private ghidra.program.model.data.Enum findEnumByName(DataTypeManager dtm, String enumName) {
+        final ghidra.program.model.data.Enum[] result = new ghidra.program.model.data.Enum[1];
+
+        dtm.getAllDataTypes().forEachRemaining(dt -> {
+            if (dt instanceof ghidra.program.model.data.Enum && dt.getName().equals(enumName)) {
+                if (result[0] == null) {
+                    result[0] = (ghidra.program.model.data.Enum) dt;
+                }
+            }
+        });
+
+        return result[0];
+    }
+
+    // ==================== LIST ALL TYPES ENDPOINT ====================
+
+    /**
+     * List all data types with optional category filtering
+     * GET /types?category=/path
+     */
+    private void handleListTypes(HttpExchange exchange) throws IOException {
+        try {
+            Map<String, String> qparams = parseQueryParams(exchange);
+            int offset = parseIntOrDefault(qparams.get("offset"), 0);
+            int limit = parseIntOrDefault(qparams.get("limit"), 100);
+            String categoryFilter = qparams.get("category");
+
+            Program program = getCurrentProgram();
+            if (program == null) {
+                sendErrorResponse(exchange, 400, "No program loaded", "NO_PROGRAM_LOADED");
+                return;
+            }
+
+            DataTypeManager dtm = program.getDataTypeManager();
+            List<Map<String, Object>> typeList = new ArrayList<>();
+
+            dtm.getAllDataTypes().forEachRemaining(dataType -> {
+                // Apply category filter if specified
+                if (categoryFilter != null && !categoryFilter.isEmpty()) {
+                    if (!dataType.getCategoryPath().getPath().startsWith(categoryFilter)) {
+                        return;
+                    }
+                }
+
+                Map<String, Object> typeInfo = new HashMap<>();
+                typeInfo.put("name", dataType.getName());
+                typeInfo.put("path", dataType.getPathName());
+                typeInfo.put("size", dataType.getLength());
+                typeInfo.put("category", dataType.getCategoryPath().getPath());
+
+                // Identify the type kind
+                String kind = "unknown";
+                if (dataType instanceof Structure) {
+                    kind = "struct";
+                } else if (dataType instanceof ghidra.program.model.data.Enum) {
+                    kind = "enum";
+                } else if (dataType instanceof TypeDef) {
+                    kind = "typedef";
+                } else if (dataType instanceof Pointer) {
+                    kind = "pointer";
+                } else if (dataType instanceof Array) {
+                    kind = "array";
+                } else if (dataType instanceof FunctionDefinition) {
+                    kind = "function";
+                } else if (dataType instanceof Union) {
+                    kind = "union";
+                } else {
+                    kind = "builtin";
+                }
+                typeInfo.put("kind", kind);
+
+                typeList.add(typeInfo);
+            });
+
+            typeList.sort(Comparator.comparing(t -> (String) t.get("name")));
+
+            ResponseBuilder builder = new ResponseBuilder(exchange, port).success(true);
+            List<Map<String, Object>> paginated = applyPagination(typeList, offset, limit, builder, "/types");
+            builder.result(paginated);
+            builder.addLink("program", "/program");
+
+            sendJsonResponse(exchange, builder.build(), 200);
+        } catch (Exception e) {
+            Msg.error(this, "Error listing types", e);
+            sendErrorResponse(exchange, 500, "Error listing types: " + e.getMessage(), "INTERNAL_ERROR");
+        }
     }
 }

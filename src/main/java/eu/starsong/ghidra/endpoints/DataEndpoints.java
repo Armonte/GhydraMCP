@@ -1367,9 +1367,20 @@ package eu.starsong.ghidra.endpoints;
                             if (baseType == null) {
                                 baseType = program.getDataTypeManager().findDataType("/" + baseTypeStr);
                             }
+                            // Search by simple name (for structs in categories like /arika/struct_2)
+                            if (baseType == null) {
+                                final ghidra.program.model.data.DataType[] result = new ghidra.program.model.data.DataType[1];
+                                final String searchName = baseTypeStr;
+                                program.getDataTypeManager().getAllDataTypes().forEachRemaining(dt -> {
+                                    if (dt.getName().equals(searchName) && result[0] == null) {
+                                        result[0] = dt;
+                                    }
+                                });
+                                baseType = result[0];
+                            }
                             if (baseType == null) {
                                 // Fallback to byte if not found
-                                baseType = new ghidra.program.model.data.ByteDataType();
+                                throw new Exception("Base type not found: " + baseTypeStr);
                             }
                             break;
                     }

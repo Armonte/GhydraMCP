@@ -110,24 +110,57 @@ public class MemoryEndpoints extends AbstractEndpoint {
                 
                 // Parse address with safety fallbacks
                 AddressFactory addressFactory = program.getAddressFactory();
-                Address address;
+                Memory memory = program.getMemory();
+                Address address = null;
+
                 try {
-                    // Try to use provided address
+                    // First try direct parsing (handles "SPACE::addr" format)
                     address = addressFactory.getAddress(addressStr);
+
+                    // If address is valid but not in memory, search all address spaces
+                    if (address == null || !memory.contains(address)) {
+                        // Try to find the address in any memory block by offset
+                        long targetOffset;
+                        try {
+                            // Parse the offset value (strip 0x prefix if present)
+                            String offsetStr = addressStr.contains("::") ?
+                                addressStr.substring(addressStr.indexOf("::") + 2) : addressStr;
+                            offsetStr = offsetStr.toLowerCase().replace("0x", "");
+                            targetOffset = Long.parseLong(offsetStr, 16);
+                        } catch (NumberFormatException nfe) {
+                            targetOffset = -1;
+                        }
+
+                        if (targetOffset >= 0) {
+                            // Search all memory blocks for one containing this offset
+                            for (MemoryBlock block : memory.getBlocks()) {
+                                long blockStart = block.getStart().getOffset();
+                                long blockEnd = block.getEnd().getOffset();
+                                if (targetOffset >= blockStart && targetOffset <= blockEnd) {
+                                    // Found a block containing this offset
+                                    address = block.getStart().getNewAddress(targetOffset);
+                                    Msg.info(this, "Found address in block '" + block.getName() + "': " + address);
+                                    break;
+                                }
+                            }
+                        }
+                    }
                 } catch (Exception e) {
+                    Msg.warn(this, "Error parsing address: " + e.getMessage());
+                }
+
+                // Final fallback if still no valid address
+                if (address == null) {
                     try {
-                        // If there's an exception, try to get the image base address instead
                         address = program.getImageBase();
                         Msg.warn(this, "Invalid address format. Using image base address: " + address);
                     } catch (Exception e2) {
-                        // If image base fails, use min address from default space
                         address = addressFactory.getDefaultAddressSpace().getMinAddress();
                         Msg.warn(this, "Could not get image base. Using default address: " + address);
                     }
                 }
-                
-                // Read memory
-                Memory memory = program.getMemory();
+
+                // Read memory - final check
                 if (!memory.contains(address)) {
                     // Try to find a valid memory block
                     MemoryBlock[] blocks = memory.getBlocks();
