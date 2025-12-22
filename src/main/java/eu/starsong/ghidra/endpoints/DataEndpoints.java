@@ -272,7 +272,7 @@ package eu.starsong.ghidra.endpoints;
                     
                     TransactionHelper.executeInTransaction(program, "Update Data", () -> {
                         // Get the data at the address first
-                        Address addr = program.getAddressFactory().getAddress(addressStr);
+                        Address addr = resolveAddress(program, addressStr);
                         Listing listing = program.getListing();
                         Data data = listing.getDefinedDataAt(addr);
                         
@@ -421,7 +421,7 @@ package eu.starsong.ghidra.endpoints;
             // This method now throws Exception to be caught by the transaction helper
             AtomicBoolean successFlag = new AtomicBoolean(false);
             try {
-                Address addr = program.getAddressFactory().getAddress(addressStr);
+                Address addr = resolveAddress(program, addressStr);
                 Listing listing = program.getListing();
                 Data data = listing.getDefinedDataAt(addr);
                 if (data != null) {
@@ -491,7 +491,7 @@ package eu.starsong.ghidra.endpoints;
                     
                     TransactionHelper.executeInTransaction(program, "Change Data Type", () -> {
                         // Get the data at the address first
-                        Address addr = program.getAddressFactory().getAddress(addressStr);
+                        Address addr = resolveAddress(program, addressStr);
                         Listing listing = program.getListing();
                         Data data = listing.getDefinedDataAt(addr);
                         
@@ -696,7 +696,7 @@ package eu.starsong.ghidra.endpoints;
                     
                     TransactionHelper.executeInTransaction(program, "Update Data", () -> {
                         // Get the data at the address first
-                        Address addr = program.getAddressFactory().getAddress(addressStr);
+                        Address addr = resolveAddress(program, addressStr);
                         Listing listing = program.getListing();
                         Data data = listing.getDefinedDataAt(addr);
                         
@@ -891,7 +891,7 @@ package eu.starsong.ghidra.endpoints;
                     
                     TransactionHelper.executeInTransaction(program, "Create Data", () -> {
                         // Get the address
-                        Address addr = program.getAddressFactory().getAddress(addressStr);
+                        Address addr = resolveAddress(program, addressStr);
                         Listing listing = program.getListing();
                         
                         // Check memory block permissions
@@ -1105,7 +1105,7 @@ package eu.starsong.ghidra.endpoints;
                         
                         TransactionHelper.executeInTransaction(program, "Set Data Type", () -> {
                             // Get the data at the address
-                            Address addr = program.getAddressFactory().getAddress(addressStr);
+                            Address addr = resolveAddress(program, addressStr);
                             Listing listing = program.getListing();
                             Data existingData = listing.getDefinedDataAt(addr);
                             
@@ -1241,7 +1241,7 @@ package eu.starsong.ghidra.endpoints;
                     
                     TransactionHelper.executeInTransaction(program, "Delete Data", () -> {
                         // Get the address
-                        Address addr = program.getAddressFactory().getAddress(addressStr);
+                        Address addr = resolveAddress(program, addressStr);
                         Listing listing = program.getListing();
                         
                         // Check if there's data at the address

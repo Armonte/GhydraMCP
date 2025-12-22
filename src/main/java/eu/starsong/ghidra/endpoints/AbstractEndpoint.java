@@ -9,7 +9,11 @@ import eu.starsong.ghidra.util.GhidraUtil; // Import GhidraUtil
 import eu.starsong.ghidra.util.HttpUtil; // Import HttpUtil
 import ghidra.app.services.ProgramManager;
 import ghidra.framework.plugintool.PluginTool;
+import ghidra.program.model.address.Address;
+import ghidra.program.model.address.AddressFactory;
 import ghidra.program.model.listing.Program;
+import ghidra.program.model.mem.Memory;
+import ghidra.program.model.mem.MemoryBlock;
 import ghidra.util.Msg;
 import java.io.IOException;
 import java.util.HashMap;
@@ -179,4 +183,78 @@ public abstract class AbstractEndpoint implements GhidraJsonEndpoint {
     }
     
     // Add other common Ghidra related utilities here or call GhidraUtil directly
+
+    /**
+     * Resolve an address string to an Address object, handling overlay address spaces.
+     * Supports formats like "800ac800", "0x800ac800", "PL00X_PAC::800ac800"
+     *
+     * @param program The program containing the address spaces
+     * @param addressStr The address string to resolve
+     * @return The resolved Address, or null if not found
+     */
+    protected Address resolveAddress(Program program, String addressStr) {
+        if (program == null || addressStr == null || addressStr.isEmpty()) {
+            return null;
+        }
+
+        AddressFactory addressFactory = program.getAddressFactory();
+        Memory memory = program.getMemory();
+        Address address = null;
+
+        try {
+            // First try direct parsing (handles "SPACE::addr" format)
+            address = addressFactory.getAddress(addressStr);
+
+            // If address is valid and in memory, return it
+            if (address != null && memory.contains(address)) {
+                return address;
+            }
+
+            // If direct parsing failed or address not in memory, search memory blocks
+            // Parse the offset value
+            long targetOffset;
+            try {
+                String offsetStr = addressStr.contains("::") ?
+                    addressStr.substring(addressStr.indexOf("::") + 2) : addressStr;
+                offsetStr = offsetStr.toLowerCase().replace("0x", "");
+                targetOffset = Long.parseLong(offsetStr, 16);
+            } catch (NumberFormatException nfe) {
+                Msg.warn(this, "Could not parse offset from address: " + addressStr);
+                return address; // Return whatever we have
+            }
+
+            // If address string contains "::", try to find that specific space
+            if (addressStr.contains("::")) {
+                String spaceName = addressStr.substring(0, addressStr.indexOf("::"));
+                for (MemoryBlock block : memory.getBlocks()) {
+                    if (block.getName().equals(spaceName)) {
+                        long blockStart = block.getStart().getOffset();
+                        long blockEnd = block.getEnd().getOffset();
+                        if (targetOffset >= blockStart && targetOffset <= blockEnd) {
+                            address = block.getStart().getNewAddress(targetOffset);
+                            Msg.info(this, "Resolved address in overlay '" + spaceName + "': " + address);
+                            return address;
+                        }
+                    }
+                }
+            }
+
+            // Search all memory blocks for one containing this offset
+            for (MemoryBlock block : memory.getBlocks()) {
+                long blockStart = block.getStart().getOffset();
+                long blockEnd = block.getEnd().getOffset();
+                if (targetOffset >= blockStart && targetOffset <= blockEnd) {
+                    // Found a block containing this offset
+                    address = block.getStart().getNewAddress(targetOffset);
+                    Msg.info(this, "Found address in block '" + block.getName() + "': " + address);
+                    return address;
+                }
+            }
+
+        } catch (Exception e) {
+            Msg.warn(this, "Error resolving address '" + addressStr + "': " + e.getMessage());
+        }
+
+        return address;
+    }
 }
