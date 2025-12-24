@@ -441,36 +441,95 @@ public class StructEndpoints extends AbstractEndpoint {
 
                     // Find the struct - handle both full paths and simple names
                     DataType dataType = null;
+                    List<String> searchedPaths = new ArrayList<>();
+
                     if (structName.startsWith("/")) {
+                        // Try exact path first
+                        searchedPaths.add("exact path: " + structName);
                         dataType = dtm.getDataType(structName);
                         if (dataType == null) {
+                            searchedPaths.add("findDataType: " + structName);
                             dataType = dtm.findDataType(structName);
                         }
                     } else {
-                        dataType = findStructByName(dtm, structName);
+                        // Try with leading slash
+                        searchedPaths.add("root path: /" + structName);
+                        dataType = dtm.getDataType("/" + structName);
+                        if (dataType == null) {
+                            searchedPaths.add("name search: " + structName);
+                            dataType = findStructByName(dtm, structName);
+                        }
                     }
 
-                    if (dataType == null || !(dataType instanceof Structure)) {
-                        throw new Exception("Struct not found: " + structName);
+                    if (dataType == null) {
+                        throw new Exception("Struct not found: '" + structName + "'. Searched: " + String.join(", ", searchedPaths) +
+                            ". Use full path like '/category/StructName' or ensure struct exists.");
+                    }
+
+                    if (!(dataType instanceof Structure)) {
+                        throw new Exception("Data type '" + structName + "' exists but is not a struct (type: " +
+                            dataType.getClass().getSimpleName() + ", path: " + dataType.getPathName() + ")");
                     }
 
                     Structure struct = (Structure) dataType;
+                    Msg.info(this, "Found struct: " + struct.getPathName() + " (size: " + struct.getLength() + " bytes)");
 
                     // Find the field type
                     DataType fieldDataType = findDataType(dtm, fieldType);
                     if (fieldDataType == null) {
-                        throw new Exception("Field type not found: " + fieldType);
+                        throw new Exception("Field type not found: '" + fieldType + "'. Try using built-in types " +
+                            "(byte, short, int, uint, pointer) or full paths like '/category/TypeName'.");
+                    }
+
+                    // Validate field type has valid length before attempting insertion
+                    int fieldLength = fieldDataType.getLength();
+                    if (fieldLength <= 0) {
+                        throw new Exception("Field type '" + fieldType + "' has invalid length: " + fieldLength +
+                            ". Cannot add variable-length types directly. Try using a pointer or fixed-size type.");
+                    }
+
+                    Msg.info(this, "Found field type: " + fieldDataType.getPathName() + " (length: " + fieldLength + " bytes)");
+
+                    // Validate offset if provided
+                    if (finalOffset != null) {
+                        if (finalOffset < 0) {
+                            throw new Exception("Invalid offset: " + finalOffset + ". Offset must be >= 0.");
+                        }
+                        // Check for potential overlap with existing fields
+                        DataTypeComponent existingAtOffset = struct.getComponentAt(finalOffset);
+                        if (existingAtOffset != null && existingAtOffset.getOffset() == finalOffset) {
+                            Msg.warn(this, "Overwriting existing field at offset " + finalOffset +
+                                ": " + existingAtOffset.getFieldName() + " (" + existingAtOffset.getDataType().getName() + ")");
+                        }
                     }
 
                     // Add the field
                     DataTypeComponent component;
-                    if (finalOffset != null) {
-                        // Insert at specific offset
-                        component = struct.insertAtOffset(finalOffset, fieldDataType,
-                                                         fieldDataType.getLength(), fieldName, comment);
-                    } else {
-                        // Append to end
-                        component = struct.add(fieldDataType, fieldName, comment);
+                    try {
+                        if (finalOffset != null) {
+                            // Insert at specific offset
+                            Msg.info(this, "Inserting field '" + fieldName + "' at offset " + finalOffset);
+                            component = struct.insertAtOffset(finalOffset, fieldDataType,
+                                                             fieldLength, fieldName, comment);
+                        } else {
+                            // Append to end
+                            Msg.info(this, "Appending field '" + fieldName + "' to end of struct");
+                            component = struct.add(fieldDataType, fieldName, comment);
+                        }
+                    } catch (Exception e) {
+                        // Provide detailed error context
+                        String errorContext = String.format(
+                            "Failed to add field '%s' (type: %s, length: %d) to struct '%s' (current size: %d)",
+                            fieldName, fieldDataType.getName(), fieldLength, struct.getName(), struct.getLength());
+                        if (finalOffset != null) {
+                            errorContext += " at offset " + finalOffset;
+                        }
+                        throw new Exception(errorContext + ": " + e.getMessage(), e);
+                    }
+
+                    if (component == null) {
+                        throw new Exception("insertAtOffset/add returned null - field was not added. " +
+                            "This may indicate a conflict with existing fields or invalid struct state.");
                     }
 
                     resultMap.put("offset", component.getOffset());
@@ -900,6 +959,31 @@ public class StructEndpoints extends AbstractEndpoint {
             }
             // Fall back to generic pointer if base type not found
             return new PointerDataType();
+        }
+
+        // Handle array syntax (e.g., "byte[16]", "uint16_t[8]")
+        if (trimmed.contains("[") && trimmed.contains("]")) {
+            try {
+                int bracketIndex = trimmed.indexOf('[');
+                String baseTypeName = trimmed.substring(0, bracketIndex).trim();
+                String arraySizeStr = trimmed.substring(bracketIndex + 1, trimmed.indexOf(']'));
+                int arraySize = Integer.parseInt(arraySizeStr);
+
+                // Recursively find the base type
+                DataType baseType = findDataType(dtm, baseTypeName);
+                if (baseType != null) {
+                    if (baseType.getLength() <= 0) {
+                        Msg.warn(this, "Cannot create array of variable-length type: " + baseTypeName);
+                        return null;
+                    }
+                    return new ArrayDataType(baseType, arraySize, baseType.getLength());
+                }
+                Msg.warn(this, "Base type not found for array: " + baseTypeName);
+                return null;
+            } catch (NumberFormatException e) {
+                Msg.warn(this, "Invalid array size in type: " + trimmed);
+                return null;
+            }
         }
 
         // Try direct lookup with path

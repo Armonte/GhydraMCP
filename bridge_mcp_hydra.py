@@ -2650,6 +2650,191 @@ def functions_set_comment(address: str, comment: str = "", port: int = None) -> 
     print(f"Falling back to setting 'pre' comment for address {address}", file=sys.stderr)
     return comments_set(address=address, comment=comment, comment_type="pre", port=port_to_use)
 
+# Label and Namespace tools
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Rename Label",
+        destructiveHint=True,
+    ),
+)
+def labels_rename(address: str, name: str = None, namespace: str = None, port: int = None) -> dict:
+    """Rename a label/symbol and optionally change its namespace
+    
+    Args:
+        address: Memory address in hex format
+        name: New name for the label (optional, if not provided only namespace will change)
+        namespace: New namespace name (optional, if not provided only name will change)
+        port: Specific Ghidra instance port (optional)
+        
+    Returns:
+        dict: Operation result with the updated symbol information
+    """
+    if not address:
+        return {
+            "success": False,
+            "error": {
+                "code": "MISSING_PARAMETER",
+                "message": "Address parameter is required"
+            },
+            "timestamp": int(time.time() * 1000)
+        }
+    
+    if not name and not namespace:
+        return {
+            "success": False,
+            "error": {
+                "code": "MISSING_PARAMETER",
+                "message": "Either name or namespace parameter must be provided"
+            },
+            "timestamp": int(time.time() * 1000)
+        }
+    
+    port = _get_instance_port(port)
+    
+    payload = {}
+    if name:
+        payload["name"] = name
+    if namespace:
+        payload["namespace"] = namespace
+    
+    # Normalize address (remove 0x prefix if present)
+    normalized_address = address.replace("0x", "").replace("0X", "")
+    
+    response = safe_patch(port, f"symbols/{normalized_address}", payload)
+    return simplify_response(response)
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Get Label",
+    ),
+)
+def labels_get(address: str, port: int = None) -> dict:
+    """Get label/symbol information at a specific address
+    
+    Args:
+        address: Memory address in hex format
+        port: Specific Ghidra instance port (optional)
+        
+    Returns:
+        dict: Symbol information including name, namespace, type, etc.
+    """
+    if not address:
+        return {
+            "success": False,
+            "error": {
+                "code": "MISSING_PARAMETER",
+                "message": "Address parameter is required"
+            },
+            "timestamp": int(time.time() * 1000)
+        }
+    
+    port = _get_instance_port(port)
+    
+    # Normalize address (remove 0x prefix if present)
+    normalized_address = address.replace("0x", "").replace("0X", "")
+    
+    response = safe_get(port, f"symbols/{normalized_address}")
+    return simplify_response(response)
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="List Namespaces",
+    ),
+)
+def namespaces_list(offset: int = 0, limit: int = 100, port: int = None) -> dict:
+    """List all namespaces in the program
+    
+    Args:
+        offset: Pagination offset (default: 0)
+        limit: Maximum items to return (default: 100)
+        port: Specific Ghidra instance port (optional)
+        
+    Returns:
+        dict: List of namespace names
+    """
+    port = _get_instance_port(port)
+    
+    params = {
+        "offset": offset,
+        "limit": limit
+    }
+    
+    response = safe_get(port, "namespaces", params)
+    return simplify_response(response)
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Get Namespace",
+    ),
+)
+def namespaces_get(name: str, port: int = None) -> dict:
+    """Get information about a specific namespace
+    
+    Args:
+        name: Namespace name (can include :: for fully qualified names like "switchD_801a01b4")
+        port: Specific Ghidra instance port (optional)
+        
+    Returns:
+        dict: Namespace information including name, symbol count, etc.
+    """
+    if not name:
+        return {
+            "success": False,
+            "error": {
+                "code": "MISSING_PARAMETER",
+                "message": "Name parameter is required"
+            },
+            "timestamp": int(time.time() * 1000)
+        }
+    
+    port = _get_instance_port(port)
+    
+    # URL encode the namespace name
+    from urllib.parse import quote
+    encoded_name = quote(name, safe="")
+    
+    response = safe_get(port, f"namespaces/{encoded_name}")
+    return simplify_response(response)
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Rename Namespace",
+        destructiveHint=True,
+    ),
+)
+def namespaces_rename(old_name: str, new_name: str, port: int = None) -> dict:
+    """Rename a namespace (this will rename the namespace symbol and affect all symbols in that namespace)
+    
+    Args:
+        old_name: Current namespace name (can include :: for fully qualified names)
+        new_name: New namespace name
+        port: Specific Ghidra instance port (optional)
+        
+    Returns:
+        dict: Operation result with the updated namespace information
+    """
+    if not old_name or not new_name:
+        return {
+            "success": False,
+            "error": {
+                "code": "MISSING_PARAMETER",
+                "message": "Both old_name and new_name parameters are required"
+            },
+            "timestamp": int(time.time() * 1000)
+        }
+    
+    port = _get_instance_port(port)
+    
+    # URL encode the namespace name
+    from urllib.parse import quote
+    encoded_name = quote(old_name, safe="")
+    
+    payload = {
+        "name": new_name
+    }
+    
+    response = safe_patch(port, f"namespaces/{encoded_name}", payload)
+    return simplify_response(response)
 
 # ================= Startup =================
 
